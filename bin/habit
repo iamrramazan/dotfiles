@@ -1,0 +1,958 @@
+#!/usr/bin/env python3
+"""
+habit v2 - локальный трекер привычек и подготовки к поступлению.
+
+БЕЗОПАСНОСТЬ (всё это можно проверить глазами):
+  * только стандартная библиотека Python: никаких pip и AUR;
+  * нет сети, нет запуска других программ, нет eval/exec, нет pickle;
+  * читает и пишет ТОЛЬКО папку ~/.local/share/habits/ (data.json и trial.json);
+  * запись атомарная + резервная копия .bak, права 700 на папку и 600 на файлы;
+  * отказывается работать, если файл данных - ссылка или папка чужая;
+  * текст заметок очищается от управляющих символов (никаких "терминальных" трюков).
+
+КАК ДОБАВИТЬ НОВУЮ ПРИВЫЧКУ: найди раздел "2. ПРИВЫЧКИ" ниже и добавь одну строку.
+"""
+import json
+import os
+import shutil
+import sys
+from datetime import date, timedelta
+from pathlib import Path
+
+# =====================================================================
+# 1. НАСТРОЙКИ ПЛАНА
+# =====================================================================
+START = date(2026, 10, 26)          # понедельник недели 1 (до этой даты - пробный режим)
+TOTAL_WEEKS = 35                    # всего недель плана (с 26.10 до конца июня)
+MIX = {5, 10, 15, 20, 25, 30}       # недели смешивания
+WIDE = {15, 30}                     # недели широкой проверки всего материала
+LAST_LEARN = 33                     # недели 31-33: обучение (33 = две темы информатики)
+BASE_RESERVE = 2                    # резерв: недели 34-35
+MIX_TOPICS = "мат 8, рус 10, инф 6"  # тем за 4 учебные недели по плану
+
+TRAIN_DAYS_BASE = (0, 4)            # дни тренировок до разблокировки: пн, пт
+TRAIN_DAYS_UNLOCKED = (0, 2, 4)     # после разблокировки: пн, ср, пт
+UNLOCK_LEVEL = 6                    # стойка и мостик открываются, когда во всех 4 упражнениях >= 6 уровня
+
+# =====================================================================
+# 2. ПРИВЫЧКИ - ЗДЕСЬ ДОБАВЛЯЙ НОВЫЕ
+# =====================================================================
+# Каждая строка - одна привычка. Порядок в списке = номера на экране ([1], [2], ...).
+# Чтобы номера не сдвигались, новые привычки пиши В КОНЕЦ списка.
+#
+# Поля обычной привычки (kind = "check"):
+#   key    - имя в журнале (латиницей, без пробелов, не менять после начала!)
+#   title  - как называется на экране
+#   short  - короткое имя (до 7 символов) для таблицы недели
+#   days   - в какие дни нужна: (0, 2, 4) = пн, ср, пт; не указывай, если каждый день
+#   health - как влияет на ЗДОРОВЬЕ: "pm"    = сделал +1, пропустил -1
+#                                    "bonus" = сделал +1, пропуск без штрафа
+#                                    не указывай, если не влияет
+#
+# Пример (раскомментируй и вставь перед последней скобкой списка):
+#   {"key": "water", "kind": "check", "title": "Вода 2 л", "short": "Вода", "health": "pm"},
+#
+# Особые виды (их логика прописана в коде ниже): "prep", "prayer", "train".
+HABITS = [
+    {"key": "prep",    "kind": "prep",   "title": "Подготовка",       "short": "Подг."},
+    {"key": "sleep",   "kind": "check",  "title": "Сон ≥ 7 ч",        "short": "Сон",    "health": "pm"},
+    {"key": "food",    "kind": "check",  "title": "Питание по норме", "short": "Еда",    "health": "pm"},
+    {"key": "train",   "kind": "train",  "title": "Тренировка",       "short": "Трен."},
+    {"key": "stretch", "kind": "check",  "title": "Растяжка (бонус)", "short": "Растяж", "health": "bonus"},
+    {"key": "prayer",  "kind": "prayer", "title": "Намаз",            "short": "Намаз"},
+    {"key": "relig",   "kind": "check",  "title": "Религия 15 мин",   "short": "Религ."},
+]
+
+# =====================================================================
+# 3. УПРАЖНЕНИЯ (Тренировочная зона)
+# =====================================================================
+# (ключ, короткое имя, с каких букв распознаётся в команде, стартовый [уровень, подуровень], открывается позже?)
+EXERCISES = [
+    ("push",   "отж",    ("отж", "push"),               [2, 3], False),
+    ("squat",  "прис",   ("прис", "squat"),             [4, 2], False),
+    ("pull",   "подт",   ("подт", "pull"),              [2, 1], False),
+    ("legs",   "ноги",   ("подъ", "ног", "legs"),       [1, 1], False),
+    ("hs",     "стойка", ("стой", "hs"),                [1, 1], True),
+    ("bridge", "мост",   ("мост", "bridge"),            [1, 1], True),
+]
+BASE_EX = [e[0] for e in EXERCISES if not e[4]]      # четыре основных упражнения
+EX_NAME = {e[0]: e[1] for e in EXERCISES}            # ключ -> короткое имя
+EX_PREFIX = [(p, e[0]) for e in EXERCISES for p in e[2]]   # приставка -> ключ
+EX_INIT = {e[0]: e[3] for e in EXERCISES}            # стартовые уровни
+
+# =====================================================================
+# 4. ПРОЧИЕ КОНСТАНТЫ
+# =====================================================================
+WD = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+MONTHS = ["янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"]
+SUBJ = {0: "Математика", 1: "Русский язык", 2: "Информатика", 3: "Математика", 4: "Русский язык"}
+SHORT = {0: "мат", 1: "рус", 2: "инф", 3: "мат", 4: "рус"}
+SUBJ_KEYS = [("мат", "мат"), ("инф", "инф"), ("рус", "рус")]
+EAT_PREFIX = [("боб", "бобовые"), ("рыб", "рыба"), ("мол", "молочка")]
+PRAYERS = "ФЗАМИ"                    # Фаджр, Зухр, Аср, Магриб, Иша
+ACC, WARN = "38;2;44;74;122", "38;5;166"   # цвета: заголовки (синий #2c4a7a) и пробный режим
+USE_COLOR = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+MAX_NOTE = 200                       # максимальная длина одной заметки
+MAX_NOTES_PER_DAY = 30               # максимум заметок за день
+
+HELP = """habit                  отметить день
+habit week [-1]        итог недели (-1 = прошлая)
+habit note текст       заметка к дню (habit note - = удалить последнюю)
+habit notes [-1|all]   заметки недели / прошлой недели / все
+habit test мат 7/10    результат проверки (мат/инф/рус)
+habit up отж           +1 подуровень (отж/прис/подт/ноги/стойка/мост)
+habit down отж         -1 подуровень (если откатился)
+habit set отж 2.3      задать уровень вручную
+habit eat рыба         бобовые/рыба/молочка за день (повтор = снять)
+habit madeup | slip    восполнил неделю | потерял неделю (резерв +1 / -1)
+habit check            сверка с графиком по темам
+habit trial-reset      очистить пробный журнал
+флаги: --trial (пробный режим), --date ГГГГ-ММ-ДД"""
+
+
+def c(text, code):
+    """Раскрасить текст (если терминал поддерживает цвета)."""
+    return f"\033[{code}m{text}\033[0m" if USE_COLOR else text
+
+
+def clean(text):
+    """Убрать из текста управляющие символы и ограничить длину."""
+    return "".join(ch for ch in str(text) if ch.isprintable())[:MAX_NOTE].strip()
+
+
+# =====================================================================
+# 5. УРОВНИ И СИЛА
+# =====================================================================
+def unlock_pts():
+    """Сколько очков = 6-й уровень, 1-й подуровень: (6-1)*3 + 1 = 16."""
+    return (UNLOCK_LEVEL - 1) * 3 + 1
+
+
+def points(lv):
+    """Очки упражнения: каждый подуровень = +1 очко."""
+    return (lv[0] - 1) * 3 + lv[1]
+
+
+def lvl(lv):
+    """Уровень для показа: 2.3, а мастер (11) = М."""
+    return "М" if lv[0] == 11 else f"{lv[0]}.{lv[1]}"
+
+
+def valid_level(v):
+    """Проверка, что уровень в файле корректный: [уровень 1-11, подуровень 1-3], мастер только 11.1."""
+    return (isinstance(v, list) and len(v) == 2 and all(isinstance(x, int) for x in v)
+            and 1 <= v[0] <= 11 and 1 <= v[1] <= 3 and (v[0] < 11 or v[1] == 1))
+
+
+def unlocked_by(d, day):
+    """Открыты ли стойка и мостик к указанному дню (дата разблокировки хранится в журнале)."""
+    u = d.get("unlocked_on")
+    return bool(u) and u <= day.isoformat()
+
+
+def train_days(d, day):
+    """Дни недели тренировок: пн, пт - до разблокировки; пн, ср, пт - после."""
+    return TRAIN_DAYS_UNLOCKED if unlocked_by(d, day) else TRAIN_DAYS_BASE
+
+
+def active_ex(d, day=None):
+    """Какие упражнения сейчас активны: 4 основных, а после разблокировки все 6."""
+    day = day or date.max
+    return [e[0] for e in EXERCISES if not e[4] or unlocked_by(d, day)]
+
+
+def power(d):
+    """СИЛА. До разблокировки: сумма очков 4 упражнений, каждое не выше 16 (прогресс к 64).
+    После разблокировки: полная сумма очков всех 6 упражнений."""
+    if d.get("unlocked_on"):
+        return sum(points(d["levels"][k]) for k in active_ex(d))
+    return sum(min(points(d["levels"][k]), unlock_pts()) for k in BASE_EX)
+
+
+def power_at(s, day):
+    """Сила на конец указанного дня (по журналу изменений силы)."""
+    val = s.d["power_log"][0][1]
+    for dt, v in sorted(s.d["power_log"], key=lambda e: e[0]):
+        if dt <= day.isoformat():
+            val = v
+    return val
+
+
+def ex_lines(d, day):
+    """Строки с уровнями упражнений по два в строке: 'отж 2.3 · прис 4.2'."""
+    items = [f"{EX_NAME[k]} {lvl(d['levels'][k])}" for k in active_ex(d, day)]
+    return ["  " + " · ".join(items[i:i + 2]) for i in range(0, len(items), 2)]
+
+
+# =====================================================================
+# 6. ХРАНЕНИЕ ДАННЫХ
+# =====================================================================
+def data_dir():
+    """Папка данных: ~/.local/share/habits (или $XDG_DATA_HOME/habits)."""
+    base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
+    return Path(base) / "habits"
+
+
+def fresh():
+    """Пустой журнал для первого запуска."""
+    return {"v": 2, "days": {}, "tests": [], "levels": {k: list(v) for k, v in EX_INIT.items()},
+            "power_log": [["2000-01-01", None]], "madeup": 0, "slips": 0, "notes": {},
+            "unlocked_on": None}
+
+
+def normalize(d):
+    """Достроить и проверить журнал: старые файлы (v1) подхватываются без потерь."""
+    for k, v in fresh().items():
+        d.setdefault(k, v)
+    d["v"] = 2
+    if not isinstance(d["days"], dict):
+        d["days"] = {}
+    d["days"] = {k: v for k, v in d["days"].items() if isinstance(v, dict)}
+    for rec in d["days"].values():                       # заметки дня: только список строк
+        n = rec.get("notes")
+        if n is not None:
+            rec["notes"] = [clean(x) for x in n if isinstance(x, str)][:MAX_NOTES_PER_DAY] if isinstance(n, list) else []
+    d["tests"] = [t for t in d["tests"] if isinstance(t, dict) and isinstance(t.get("ok"), int)
+                  and isinstance(t.get("n"), int) and t["n"] > 0 and isinstance(t.get("d"), str)]
+    if not isinstance(d["levels"], dict):
+        d["levels"] = {}
+    for k in EX_INIT:
+        if not valid_level(d["levels"].get(k)):
+            d["levels"][k] = list(EX_INIT[k])
+    if not isinstance(d["notes"], dict):
+        d["notes"] = {}
+    for k in ("madeup", "slips"):
+        if not isinstance(d[k], int):
+            d[k] = 0
+    if not (d["unlocked_on"] is None or isinstance(d["unlocked_on"], str)):
+        d["unlocked_on"] = None
+    if not isinstance(d["power_log"], list) or not d["power_log"]:
+        d["power_log"] = [["2000-01-01", None]]
+    if d["power_log"][0][1] is None:                      # стартовая сила
+        d["power_log"][0][1] = sum(min(points(EX_INIT[k]), unlock_pts()) for k in BASE_EX)
+    return d
+
+
+def check_dir(ddir):
+    """Папка данных должна принадлежать тебе (защита от подмены)."""
+    if ddir.exists() and ddir.stat().st_uid != os.getuid():
+        sys.exit(" Папка данных принадлежит другому пользователю. Остановлено.")
+
+
+def load(path):
+    """Прочитать журнал. Основной файл -> копия .bak -> пустой. Повреждённое не перезаписывается."""
+    check_dir(path.parent)
+    if path.is_symlink():
+        sys.exit(" Файл данных - символическая ссылка. Остановлено: " + str(path))
+    for p in (path, path.with_suffix(".json.bak")):
+        try:
+            with open(p, encoding="utf-8") as f:
+                d = json.load(f)
+            if isinstance(d, dict):
+                return normalize(d)
+        except (FileNotFoundError, ValueError, OSError):
+            continue
+    if path.exists():
+        sys.exit(" Файл данных повреждён, копия тоже. Ничего не изменено: " + str(path))
+    return normalize(fresh())
+
+
+def save(path, d):
+    """Записать журнал атомарно: во временный файл, затем переименование; перед этим копия .bak."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(path.parent, 0o700)                          # папка: только владелец
+    check_dir(path.parent)
+    if path.exists():
+        shutil.copy2(path, path.with_suffix(".json.bak"))
+    tmp = path.with_suffix(".json.tmp")
+    tmp.unlink(missing_ok=True)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)   # файл: только владелец
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(d, f, ensure_ascii=False, indent=1, sort_keys=True)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
+# =====================================================================
+# 7. КОНТЕКСТ И КАЛЕНДАРЬ ПЛАНА
+# =====================================================================
+class S:
+    """Контекст запуска: журнал, выбранный день, режим (пробный/основной)."""
+
+    def __init__(self, d, eff, trial, path):
+        self.d, self.eff, self.trial, self.path = d, eff, trial, path
+        # в пробном режиме до старта неделя 1 = неделя выбранного дня
+        self.base = START if eff >= START else eff - timedelta(days=eff.weekday())
+
+    def rec(self, day=None):
+        """Запись дня (только чтение)."""
+        return self.d["days"].get((day or self.eff).isoformat(), {})
+
+    def rec_w(self):
+        """Запись дня для изменения (создаётся, если нет)."""
+        return self.d["days"].setdefault(self.eff.isoformat(), {})
+
+    def save(self):
+        save(self.path, self.d)
+
+
+def wk(s, day):
+    """Номер недели плана для даты."""
+    return (day - s.base).days // 7 + 1
+
+
+def wtype(n):
+    """Тип недели: before / mix / learn / reserve / after."""
+    if n < 1:
+        return "before"
+    if n in MIX:
+        return "mix"
+    if n <= LAST_LEARN:
+        return "learn"
+    if n <= TOTAL_WEEKS:
+        return "reserve"
+    return "after"
+
+
+def week_label(n):
+    """Подпись недели под заголовком."""
+    t = wtype(n)
+    if t == "mix":
+        if n in WIDE:
+            return f"СМЕШИВАНИЕ + широкая проверка · нед. 1–{n - 1}"
+        return f"СМЕШИВАНИЕ · темы нед. {n - 4}–{n - 1}"
+    if t == "learn":
+        return "обучение · 2 темы информатики" if n == LAST_LEARN else "обучение"
+    if t == "reserve":
+        return "РЕЗЕРВ · полное смешивание + демо-варианты" if n == 34 else "РЕЗЕРВ · разбор ошибок"
+    return "план завершён"
+
+
+def reserve(s):
+    """Резерв в неделях: базовый + восполненные - потерянные."""
+    return BASE_RESERVE + s.d["madeup"] - s.d["slips"]
+
+
+# =====================================================================
+# 8. ПРИВЫЧКИ: КОГДА НУЖНЫ, КАК ВЛИЯЮТ НА ЗДОРОВЬЕ
+# =====================================================================
+def days_text(days):
+    """(0, 2, 4) -> 'пн, ср, пт'."""
+    return ", ".join(WD[x].lower() for x in days)
+
+
+def due_days(s, h, day):
+    """Дни недели, в которые привычка нужна (None = каждый день)."""
+    if h["kind"] == "train":
+        return train_days(s.d, day)
+    return h.get("days")
+
+
+def is_due(s, h, day):
+    """Нужна ли привычка в этот день."""
+    dd = due_days(s, h, day)
+    return dd is None or day.weekday() in dd
+
+
+def health(s, upto):
+    """ЗДОРОВЬЕ: старт 50. 'pm': сделал +1, пропустил -1 (сегодня без штрафа); 'bonus': сделал +1."""
+    v, day = 50, s.base
+    while day <= upto:
+        r = s.rec(day)
+        # в пробном режиме штрафуем только дни, которые есть в пробном журнале
+        past = day < s.eff and (not s.trial or bool(r))
+        for h in HABITS:
+            mode = h.get("health")
+            if not mode or h["kind"] != "check":
+                continue
+            if r.get(h["key"]):
+                v += 1
+            elif mode == "pm" and past and is_due(s, h, day):
+                v -= 1
+        v = max(0, min(100, v))
+        day += timedelta(days=1)
+    return v
+
+
+def arrow(delta):
+    """Стрелка изменения."""
+    return f"▲ +{delta}" if delta > 0 else (f"▼ −{-delta}" if delta < 0 else "▬ 0")
+
+
+# =====================================================================
+# 9. ЗНАНИЯ
+# =====================================================================
+def score(tests, k, upto):
+    """Знания по предмету: среднее доли верных решений двух последних проверок (до даты upto)."""
+    ts = sorted((t for t in tests if t.get("s") == k and t["d"] <= upto), key=lambda t: t["d"])[-2:]
+    if not ts:
+        return None
+    return round(100 * sum(t["ok"] / t["n"] for t in ts) / len(ts))
+
+
+def last_test(s):
+    """'проверка: 3 нед. назад' и т.п."""
+    ds = [t["d"] for t in s.d["tests"] if t["d"] <= s.eff.isoformat()]
+    if not ds:
+        return "проверок ещё не было"
+    try:
+        n = (s.eff - date.fromisoformat(max(ds))).days
+    except ValueError:
+        return ""
+    if n <= 0:
+        return "проверка: сегодня"
+    return f"проверка: {n} дн. назад" if n < 14 else f"проверка: {n // 7} нед. назад"
+
+
+# =====================================================================
+# 10. НАМАЗ, ЕДА, ЗАМЕТКИ
+# =====================================================================
+def prayers(r):
+    """Пять отметок намаза [0/1 x5]."""
+    p = r.get("prayer")
+    return p if isinstance(p, list) and len(p) == 5 else [0] * 5
+
+
+def pray_str(p):
+    """'Ф■ З■ А□ М□ И□'."""
+    return " ".join(f"{PRAYERS[i]}{'■' if p[i] else '□'}" for i in range(5))
+
+
+def week_eat(s, mon):
+    """Сколько дней недели были бобовые/рыба/молочка."""
+    cnt = {k: 0 for _, k in EAT_PREFIX}
+    for i in range(7):
+        for k in set(s.rec(mon + timedelta(days=i)).get("eat", [])):
+            if k in cnt:
+                cnt[k] += 1
+    return cnt
+
+
+def notes_between(s, lo, hi):
+    """Все заметки дней от lo до hi: список (дата, текст)."""
+    out = []
+    for k in sorted(s.d["days"]):
+        if lo.isoformat() <= k <= hi.isoformat():
+            out += [(k, t) for t in s.d["days"][k].get("notes", [])]
+    return out
+
+
+def fmt_date(iso):
+    """'2026-10-27' -> 'Вт 27 окт'."""
+    try:
+        d = date.fromisoformat(iso)
+    except ValueError:
+        return iso
+    return f"{WD[d.weekday()]} {d.day} {MONTHS[d.month - 1]}"
+
+
+# =====================================================================
+# 11. ЭКРАН ДНЯ
+# =====================================================================
+def item_line(s, i, h, r, wd, n):
+    """Одна строка привычки на экране дня."""
+    key, kind = h["key"], h["kind"]
+    if kind == "prayer":
+        return f" [{i}] {h['title']} " + pray_str(prayers(r))
+    if kind == "prep":
+        p = r.get("prep", 0)
+        mk = {1: "x", 2: "!"}.get(p, " ")
+        if wd < 5:
+            lab = f"{SUBJ[wd]} 1ч" if wtype(n) in ("learn", "mix") else "Подготовка 1ч"
+            if wtype(n) == "mix":
+                lab += " · смесь"
+        elif wd == 5:
+            lab = "Подготовка" + (f" ({r.get('hours', 0):g} ч)" if p == 1 else " 6ч")
+        else:
+            lab = "Журнал ошибок 15 мин"
+        return f" [{i}] [{mk}] {lab}"
+    if is_due(s, h, s.eff):
+        return f" [{i}] [{'x' if r.get(key) else ' '}] {h['title']}"
+    dd = due_days(s, h, s.eff)
+    return f" [{i}] [-] {h['title']} ({days_text(dd)})"
+
+
+def render(s):
+    """Собрать экран дня в текст."""
+    d, wd = s.eff, s.eff.weekday()
+    n, r = wk(s, d), s.rec()
+    mon = d - timedelta(days=wd)
+    out = []
+    if s.trial:
+        out.append(c(" ПРОБНЫЙ РЕЖИМ · основной журнал не затронут", WARN))
+    out.append(c(f" {WD[wd].upper()} {d.day} {MONTHS[d.month - 1]} · Нед. {n}/{TOTAL_WEEKS} · резерв {reserve(s)}", ACC))
+    out.append(" " + week_label(n))
+    out.append("")
+    sc = []                                               # ЗНАНИЯ
+    for k in ("мат", "инф", "рус"):
+        v = score(s.d["tests"], k, d.isoformat())
+        sc.append(f"{k} {v}%" if v is not None else f"{k} —")
+    out.append(" " + c("ЗНАНИЯ".ljust(9), ACC) + "  ".join(sc))
+    out.append(" " + " " * 9 + last_test(s))
+    tot = power(s.d)                                      # СИЛА
+    if s.d["unlocked_on"]:
+        strength = f"{tot} · открыты стойка и мост"
+    else:
+        strength = f"{tot}/{4 * unlock_pts()} до стойки и мостика"
+    out.append(" " + c("СИЛА".ljust(9), ACC) + strength)
+    h_now = health(s, d)                                  # ЗДОРОВЬЕ
+    out.append(" " + c("ЗДОРОВЬЕ".ljust(9), ACC)
+               + f"{h_now}  {arrow(h_now - health(s, mon - timedelta(days=1)))} за нед.")
+    if wd in train_days(s.d, d):                          # уровни показываем в день тренировки
+        out += ex_lines(s.d, d)
+    out.append("")
+    for i, h in enumerate(HABITS, start=1):               # список привычек
+        out.append(item_line(s, i, h, r, wd, n))
+    e = week_eat(s, mon)
+    out.append("")
+    out.append(f" Еда нед.: боб {e['бобовые']}/1 · рыба {e['рыба']}/2 · мол {e['молочка']}/3")
+    notes = r.get("notes", [])
+    if notes:                                             # заметки дня
+        out.append("")
+        out.append(" Заметки дня:")
+        out += [f"  · {t}" for t in notes[-3:]]
+    return "\n".join(out)
+
+
+def ask(prompt):
+    """input() без падения, если ввода нет."""
+    try:
+        return input(prompt)
+    except EOFError:
+        return ""
+
+
+def apply_marks(s, tokens):
+    """Применить введённые номера. '1!' = тема не закрыта. Повторный номер снимает отметку."""
+    wd, changed = s.eff.weekday(), False
+    for tok in tokens:
+        bang, key = tok.endswith("!"), tok.rstrip("!")
+        if not key.isdigit() or not (1 <= int(key) <= len(HABITS)):
+            print(f" Не понял: {tok}")
+            continue
+        h = HABITS[int(key) - 1]
+        if not is_due(s, h, s.eff):
+            print(f" Сегодня не нужно: {h['title']} ({days_text(due_days(s, h, s.eff))})")
+            continue
+        r = s.rec_w()
+        if h["kind"] == "prep":
+            if bang and wd < 5:
+                r["prep"] = 2                             # тема не закрыта (хвост)
+            elif r.get("prep"):
+                r["prep"] = 0
+                r.pop("hours", None)
+            else:
+                r["prep"] = 1
+                if wd == 5:                               # в субботу спрашиваем часы
+                    raw = ask(" Часов подготовки (Enter = 6): ").strip().replace(",", ".")
+                    try:
+                        hrs = float(raw) if raw else 6.0
+                    except ValueError:
+                        hrs = 6.0
+                    r["hours"] = max(0.0, min(12.0, hrs))
+        elif h["kind"] == "prayer":
+            p = prayers(r)
+            raw = ask(f" Намаз {pray_str(p)}\n Номера 1-5 (переключить), 0 = все пять: ").split()
+            if "0" in raw:
+                p = [1] * 5
+            else:
+                for x in raw:
+                    if len(x) == 1 and x in "12345":
+                        p[int(x) - 1] = 0 if p[int(x) - 1] else 1
+            r["prayer"] = p
+        else:                                             # обычная галочка (check и train)
+            r[h["key"]] = 0 if r.get(h["key"]) else 1
+        changed = True
+    return changed
+
+
+def cmd_day(s):
+    """Основной режим: показать день, принять номера, сохранить."""
+    print(render(s))
+    raw = ask("\n Номера через пробел (Enter — выход): ").split()
+    if raw and apply_marks(s, raw):
+        s.save()
+        print("\n" + render(s))
+        ask("\n Enter — закрыть")
+
+
+# =====================================================================
+# 12. ИТОГ НЕДЕЛИ
+# =====================================================================
+def pairs_wrap(items, width=34):
+    """Склеить элементы в строки не длиннее width."""
+    lines, cur = [], ""
+    for it in items:
+        if cur and len(cur) + 2 + len(it) > width:
+            lines.append(cur)
+            cur = it
+        else:
+            cur = f"{cur}  {it}" if cur else it
+    if cur:
+        lines.append(cur)
+    return lines
+
+
+def cmd_week(s, off):
+    """Итог недели (off=0 текущая, -1 прошлая)."""
+    mon = s.eff - timedelta(days=s.eff.weekday()) + timedelta(weeks=off)
+    sun = mon + timedelta(days=6)
+    n = wk(s, mon)
+    if n < 1:
+        print(" До старта плана.")
+        return
+    days = [mon + timedelta(days=i) for i in range(7)]
+    recs = [s.rec(x) for x in days]
+    fut = [x > s.eff for x in days]                       # будущие дни показываем точкой
+    el = max(1, 7 - sum(fut))                             # сколько дней недели уже прошло
+    if s.trial:
+        print(c(" ПРОБНЫЙ РЕЖИМ", WARN))
+    print(c(f" НЕДЕЛЯ {n} · {mon.day} {MONTHS[mon.month - 1]}–{sun.day} {MONTHS[sun.month - 1]}", ACC))
+    print(" " + week_label(n))
+    print("\n " + " " * 8 + " ".join(WD))
+
+    for h in HABITS:                                      # таблица: строка на привычку
+        cells = []
+        for i in range(7):
+            if fut[i]:
+                cells.append("·")
+            elif h["kind"] == "prep":
+                cells.append({1: "■", 2: "!"}.get(recs[i].get("prep"), "□"))
+            elif h["kind"] == "prayer":
+                cells.append(str(sum(prayers(recs[i]))))
+            elif not is_due(s, h, days[i]):
+                cells.append("·")
+            else:
+                cells.append("■" if recs[i].get(h["key"]) else "□")
+        print(" " + h["short"].ljust(8) + " ".join(f"{x:<2}" for x in cells))
+
+    print("\n " + c("ЗНАНИЯ", ACC))
+    parts = []
+    for k in ("мат", "инф", "рус"):
+        b = score(s.d["tests"], k, (mon - timedelta(days=1)).isoformat())
+        a = score(s.d["tests"], k, sun.isoformat())
+        if a is None:
+            parts.append(f"{k} —")
+        elif b is None:
+            parts.append(f"{k} {a} (база)")
+        else:
+            parts.append(f"{k} {b}→{a} " + ("▲" if a > b else "▼" if a < b else "▬"))
+    for ln in pairs_wrap(parts):
+        print("  " + ln)
+    nt = sum(1 for t in s.d["tests"] if mon.isoformat() <= t["d"] <= sun.isoformat())
+    print(f"  проверок за неделю: {nt}")
+
+    print("\n " + c("СИЛА", ACC) + f" {power_at(s, mon - timedelta(days=1))}→{power_at(s, sun)}")
+    for ln in ex_lines(s.d, sun):
+        print(ln)
+
+    hb, ha = health(s, mon - timedelta(days=1)), health(s, min(sun, s.eff))
+    print("\n " + c("ЗДОРОВЬЕ", ACC) + f" {hb}→{ha}")
+
+    counters = []                                         # счётчики привычек-галочек
+    for h in HABITS:
+        if h["kind"] in ("check", "train"):
+            due = [i for i in range(7) if not fut[i] and is_due(s, h, days[i])]
+            if due:
+                counters.append(f"{h['short']} {sum(1 for i in due if recs[i].get(h['key']))}/{len(due)}")
+    for ln in pairs_wrap(counters):
+        print("  " + ln)
+
+    hrs = 0.0                                             # часы подготовки пн-сб
+    for i in range(6):
+        if fut[i]:
+            continue
+        p = recs[i].get("prep")
+        if i < 5 and p in (1, 2):
+            hrs += 1
+        elif i == 5 and p == 1:
+            hrs += float(recs[i].get("hours", 0) or 0)
+    print(f"\n Подготовка: {hrs:g} из 11 ч")
+    if wtype(n) == "learn":
+        print(f" Тем закрыто {sum(1 for i in range(5) if recs[i].get('prep') == 1)},"
+              f" хвост {sum(1 for i in range(5) if recs[i].get('prep') == 2)}")
+    e = week_eat(s, mon)
+    print(f" Бобовые {e['бобовые']}/1 · Рыба {e['рыба']}/2 · Молочка {e['молочка']}/3")
+    print(f" Намаз {sum(sum(prayers(x)) for x in recs)}/{5 * el}")
+    print(f" Резерв: {reserve(s)} нед. (восполнено {s.d['madeup']}, потеряно {s.d['slips']})")
+
+    nts = notes_between(s, mon, sun)                      # заметки недели
+    old = s.d["notes"].get(str(n), [])                    # старые заметки к неделе (из версии 1)
+    if nts or old:
+        print("\n Заметки:")
+        for k, t in nts[-6:]:
+            print(f"  {fmt_date(k)}: {t}")
+        for t in old[-2:]:
+            print(f"  нед.: {clean(t)}")
+    else:
+        print("\n Заметки: — (habit note текст)")
+    if wtype(n + 1) == "mix":
+        extra = " + широкая проверка" if (n + 1) in WIDE else ""
+        print(f"\n Со следующей недели: СМЕШИВАНИЕ{extra}")
+        print(f" Темы нед. {n - 3}–{n}: {MIX_TOPICS}")
+
+
+# =====================================================================
+# 13. КОМАНДЫ
+# =====================================================================
+def match(word, table):
+    """Найти ключ по началу слова (регистр не важен)."""
+    w = word.lower()
+    for pre, key in table:
+        if w.startswith(pre):
+            return key
+    return None
+
+
+def cmd_test(s, a):
+    """habit test мат 7/10 - результат проверки."""
+    k = match(a[0], SUBJ_KEYS) if len(a) == 2 else None
+    try:
+        ok, n = (int(x) for x in a[1].split("/"))
+    except (ValueError, IndexError):
+        ok = n = -1
+    if not k or not (0 <= ok <= n <= 1000 and n > 0):
+        sys.exit(" Формат: habit test мат 7/10  (мат/инф/рус, решено/всего)")
+    b = score(s.d["tests"], k, s.eff.isoformat())
+    s.d["tests"].append({"d": s.eff.isoformat(), "s": k, "ok": ok, "n": n})
+    s.save()
+    print(f" {k}: {ok}/{n} записано. Знания: {b if b is not None else '—'} → {score(s.d['tests'], k, s.eff.isoformat())}%")
+
+
+def refresh_unlock(s):
+    """Открыть стойку и мостик, когда во всех 4 упражнениях >= 6 уровня.
+    Если это сделано ошибочно сегодня и уровень откатили - закрыть обратно."""
+    ok = all(points(s.d["levels"][k]) >= unlock_pts() for k in BASE_EX)
+    today = s.eff.isoformat()
+    if ok and not s.d["unlocked_on"]:
+        s.d["unlocked_on"] = today
+        return "opened"
+    if not ok and s.d["unlocked_on"] == today:
+        s.d["unlocked_on"] = None
+        return "closed"
+    return None
+
+
+def finish_level_change(s, k):
+    """После изменения уровня: проверить разблокировку, записать силу, сохранить, вывести."""
+    event = refresh_unlock(s)
+    s.d["power_log"].append([s.eff.isoformat(), power(s.d)])
+    s.save()
+    print(f" {EX_NAME[k]}: {lvl(s.d['levels'][k])} · Сила {power(s.d)}")
+    if event == "opened":
+        print(f" Открыты стойка на руках и мостик. Тренировки теперь: {days_text(TRAIN_DAYS_UNLOCKED)}.")
+    elif event == "closed":
+        print(" Разблокировка отменена (уровень откатили в тот же день).")
+
+
+def pick_ex(a, need_args=1):
+    """Найти упражнение по команде; закрытые стойку и мостик пока не трогать."""
+    k = match(a[0], EX_PREFIX) if len(a) >= need_args else None
+    if not k:
+        sys.exit(" Упражнения: отж, прис, подт, ноги, стойка, мост")
+    return k
+
+
+def check_active(s, k):
+    """Стойка и мостик доступны только после разблокировки."""
+    if k not in active_ex(s.d):
+        sys.exit(" Стойка и мостик откроются, когда во всех четырёх упражнениях будет 6-й уровень.")
+
+
+def cmd_up(s, a):
+    """habit up отж: +1 подуровень."""
+    k = pick_ex(a)
+    check_active(s, k)
+    L, S_ = s.d["levels"][k]
+    if (L, S_) == (11, 1):
+        sys.exit(" Уже максимум.")
+    s.d["levels"][k] = [L + 1, 1] if S_ == 3 else [L, S_ + 1]
+    finish_level_change(s, k)
+
+
+def cmd_down(s, a):
+    """habit down отж: -1 подуровень (откат)."""
+    k = pick_ex(a)
+    check_active(s, k)
+    L, S_ = s.d["levels"][k]
+    if (L, S_) == (1, 1):
+        sys.exit(" Ниже некуда: 1.1.")
+    s.d["levels"][k] = [L - 1, 3] if S_ == 1 else [L, S_ - 1]
+    finish_level_change(s, k)
+
+
+def cmd_set(s, a):
+    """habit set отж 2.3: задать уровень вручную."""
+    k = pick_ex(a, 2)
+    check_active(s, k)
+    try:
+        L, S_ = (int(x) for x in a[1].split("."))
+    except (ValueError, IndexError):
+        L = S_ = 0
+    if not valid_level([L, S_]):
+        sys.exit(" Формат: habit set отж 2.3  (уровень.подуровень, 11.1 = мастер)")
+    s.d["levels"][k] = [L, S_]
+    finish_level_change(s, k)
+
+
+def cmd_eat(s, a):
+    """habit eat рыба: отметить бобовые/рыбу/молочку за день (повтор снимает)."""
+    k = match(a[0], EAT_PREFIX) if a else None
+    if not k:
+        sys.exit(" Формат: habit eat рыба|бобовые|молочка")
+    lst = s.rec_w().setdefault("eat", [])
+    if k in lst:
+        lst.remove(k)
+        print(f" {k}: снято")
+    else:
+        lst.append(k)
+        print(f" {k}: отмечено")
+    s.save()
+
+
+def cmd_note(s, a):
+    """habit note текст - заметка к дню; habit note - убирает последнюю заметку дня."""
+    if not a:
+        sys.exit(" Формат: habit note текст   или   habit note -  (удалить последнюю)")
+    r = s.rec_w()
+    notes = r.setdefault("notes", [])
+    if a == ["-"]:
+        if notes:
+            print(f" Удалено: {notes.pop()}")
+        else:
+            print(" В этом дне нет заметок.")
+    else:
+        text = clean(" ".join(a))
+        if not text:
+            sys.exit(" Пустая заметка.")
+        if len(notes) >= MAX_NOTES_PER_DAY:
+            sys.exit(f" Больше {MAX_NOTES_PER_DAY} заметок за день нельзя.")
+        notes.append(text)
+        print(f" Заметка к {fmt_date(s.eff.isoformat())} записана.")
+    s.save()
+
+
+def cmd_notes(s, a):
+    """habit notes [-1|all]: показать заметки недели / прошлой недели / все."""
+    if a and a[0] == "all":
+        lo, hi, title = date(2000, 1, 1), date(2999, 12, 31), "ВСЕ ЗАМЕТКИ"
+    else:
+        try:
+            off = int(a[0]) if a else 0
+        except ValueError:
+            sys.exit(" Формат: habit notes [-1|all]")
+        lo = s.eff - timedelta(days=s.eff.weekday()) + timedelta(weeks=off)
+        hi = lo + timedelta(days=6)
+        title = f"ЗАМЕТКИ · {lo.day} {MONTHS[lo.month - 1]}–{hi.day} {MONTHS[hi.month - 1]}"
+    print(c(" " + title, ACC))
+    rows = notes_between(s, lo, hi)
+    for k, t in rows:
+        print(f" {fmt_date(k)}: {t}")
+    for wk_n, lst in sorted(s.d["notes"].items(), key=lambda x: str(x[0])):   # заметки из версии 1
+        if a and a[0] == "all" and isinstance(lst, list):
+            for t in lst:
+                print(f" нед. {wk_n}: {clean(t)}")
+    if not rows and not (a and a[0] == "all"):
+        print(" Заметок нет.")
+
+
+def cmd_adjust(s, kind):
+    """habit madeup / habit slip: резерв +1 / -1."""
+    s.d[kind] += 1
+    s.save()
+    print(f" Резерв теперь: {reserve(s)} нед.")
+
+
+def cmd_check(s):
+    """habit check: сколько тем закрыто по будням обучения и сколько должно быть по графику."""
+    plan = {"мат": 0, "рус": 0, "инф": 0}
+    done = dict(plan)
+    day = s.base
+    while day < s.eff:
+        if wtype(wk(s, day)) == "learn" and day.weekday() < 5:
+            k = SHORT[day.weekday()]
+            plan[k] += 1
+            if s.rec(day).get("prep") == 1:
+                done[k] += 1
+        day += timedelta(days=1)
+    print(" По будням обучения: закрыто / по графику")
+    for k in plan:
+        print(f"  {k}: {done[k]}/{plan[k]}" + (f"  (отставание {plan[k] - done[k]})" if plan[k] > done[k] else ""))
+    print(" Суббота в сверку не входит.")
+
+
+# =====================================================================
+# 14. ЗАПУСК
+# =====================================================================
+def parse_args(argv):
+    """Достать флаги --trial и --date, остальное - команда и её аргументы."""
+    trial, when, rest, i = False, None, [], 0
+    while i < len(argv):
+        if argv[i] == "--trial":
+            trial = True
+        elif argv[i] == "--date" and i + 1 < len(argv):
+            when = date.fromisoformat(argv[i + 1])
+            i += 1
+        else:
+            rest.append(argv[i])
+        i += 1
+    return trial, when, rest
+
+
+def main():
+    try:
+        trial, when, rest = parse_args(sys.argv[1:])
+    except ValueError:
+        sys.exit(" Дата в формате ГГГГ-ММ-ДД")
+    real_today = date.today()
+    eff = when or real_today
+    is_trial = trial or eff < START                       # всё до 26 октября = пробный режим
+    if not is_trial and eff > real_today:
+        sys.exit(" Будущие дни в основной журнал писать нельзя. Для проб: --trial")
+    cmd, args = (rest[0] if rest else ""), rest[1:]
+    ddir = data_dir()
+    if cmd in ("help", "-h", "--help"):
+        print(HELP)
+        return
+    if cmd == "trial-reset":                              # удалить только пробные файлы
+        for suf in (".json", ".json.bak", ".json.tmp"):
+            (ddir / f"trial{suf}").unlink(missing_ok=True)
+        print(" Пробный журнал очищен.")
+        return
+    path = ddir / ("trial.json" if is_trial else "data.json")
+    s = S(load(path), eff, is_trial, path)
+    if cmd == "":
+        cmd_day(s)
+    elif cmd == "week":
+        try:
+            off = int(args[0]) if args else 0
+        except ValueError:
+            sys.exit(" Формат: habit week [-1]")
+        cmd_week(s, off)
+    elif cmd == "test":
+        cmd_test(s, args)
+    elif cmd == "up":
+        cmd_up(s, args)
+    elif cmd == "down":
+        cmd_down(s, args)
+    elif cmd == "set":
+        cmd_set(s, args)
+    elif cmd == "eat":
+        cmd_eat(s, args)
+    elif cmd == "note":
+        cmd_note(s, args)
+    elif cmd == "notes":
+        cmd_notes(s, args)
+    elif cmd == "madeup":
+        cmd_adjust(s, "madeup")
+    elif cmd == "slip":
+        cmd_adjust(s, "slips")
+    elif cmd == "check":
+        cmd_check(s)
+    else:
+        print(HELP)
+
+
+if __name__ == "__main__":
+    main()

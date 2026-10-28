@@ -1,0 +1,105 @@
+[mgr]
+cwd = { fg = "#000000", bold = true }
+border_style = { fg = "#a8956f" }
+find_keyword = { fg = "#000000", bold = true, underline = true }
+find_position = { fg = "#000000", italic = true }
+symlink_target = { fg = "#a8956f", italic = true }
+marker_copied = { fg = "#a8956f", bg = "#a8956f" }
+marker_cut = { fg = "#a8956f", bg = "#000000" }
+marker_selected = { fg = "#000000", bg = "#000000" }
+count_copied = { fg = "#000000", bg = "#a8956f" }
+count_cut = { fg = "#cdb99a", bg = "#000000", underline = true }
+count_selected = { fg = "#cdb99a", bg = "#000000" }
+
+[indicator]
+current = { fg = "#cdb99a", bg = "#000000", bold = true }
+parent = { fg = "#000000", bg = "#a8956f" }
+preview = { underline = true }
+
+[mode]
+normal_main = { fg = "#cdb99a", bg = "#000000", bold = true }
+normal_alt = { fg = "#000000", bg = "#a8956f" }
+select_main = { fg = "#000000", bg = "#a8956f", bold = true }
+select_alt = { fg = "#000000", bg = "#cdb99a" }
+unset_main = { fg = "#000000", bg = "#a8956f", underline = true }
+unset_alt = { fg = "#000000", bg = "#cdb99a" }
+
+[status]
+overall = { fg = "#000000" }
+perm_type = { fg = "#000000", bold = true }
+perm_read = { fg = "#000000" }
+perm_write = { fg = "#000000" }
+perm_exec = { fg = "#000000" }
+perm_sep = { fg = "#a8956f" }
+progress_label = { fg = "#000000", bold = true }
+progress_normal = { fg = "#000000", bg = "#a8956f" }
+progress_error = { fg = "#cdb99a", bg = "#000000" }
+
+[tabs]
+active = { fg = "#cdb99a", bg = "#000000", bold = true }
+inactive = { fg = "#000000", bg = "#a8956f" }
+
+[which]
+border = { fg = "#a8956f" }
+cand = { fg = "#000000", bold = true }
+rest = { fg = "#a8956f" }
+desc = { fg = "#000000" }
+separator_style = { fg = "#a8956f" }
+
+[confirm]
+border = { fg = "#a8956f" }
+title = { fg = "#000000", bold = true }
+body = { fg = "#000000" }
+list = { fg = "#000000" }
+btn_yes = { fg = "#cdb99a", bg = "#000000" }
+btn_no = { fg = "#000000", bg = "#a8956f" }
+
+[notify]
+title_info = { fg = "#000000", bold = true }
+title_warn = { fg = "#000000", bold = true, italic = true }
+title_error = { fg = "#000000", bold = true, underline = true }
+
+[input]
+border = { fg = "#a8956f" }
+title = { fg = "#000000", bold = true }
+value = { fg = "#000000" }
+selected = { fg = "#cdb99a", bg = "#000000" }
+
+[pick]
+border = { fg = "#a8956f" }
+active = { fg = "#cdb99a", bg = "#000000" }
+inactive = { fg = "#000000" }
+
+[filetype]
+rules = [
+	{ mime = "image/*", fg = "#000000" },
+	{ mime = "{audio,video}/*", fg = "#000000" },
+	{ mime = "inode/empty", fg = "#a8956f" },
+	{ url = "*", is = "orphan", fg = "#000000", crossed = true },
+	{ url = "*/", fg = "#000000", bold = true },
+	{ url = "*", is = "exec", fg = "#000000", italic = true },
+]
+
+[icon]
+globs = []
+dirs = []
+files = [
+	{ name = ".bashrc", text = "\uf013", fg = "#2c4a7a" },
+	{ name = ".bash_profile", text = "\uf013", fg = "#2c4a7a" },
+	{ name = ".zshrc", text = "\uf013", fg = "#2c4a7a" },
+	{ name = ".profile", text = "\uf013", fg = "#2c4a7a" },
+]
+exts = [
+	{ name = "conf", text = "\uf013", fg = "#2c4a7a" },
+	{ name = "ini", text = "\uf013", fg = "#2c4a7a" },
+	{ name = "toml", text = "\uf013", fg = "#2c4a7a" },
+	{ name = "cfg", text = "\uf013", fg = "#2c4a7a" },
+]
+conds = [
+	{ if = "dir", text = "\uf07b", fg = "#000000" },
+	{ if = "!dir", text = "\uf15b", fg = "#000000" },
+]
+
+
+
+
