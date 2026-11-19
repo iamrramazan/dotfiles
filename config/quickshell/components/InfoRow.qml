@@ -1,4 +1,5 @@
 import QtQuick
+import "."
 
 Row {
 	property string label: ""
@@ -7,7 +8,7 @@ Row {
 	Text {
 		width: 110
 		text: parent.label
-		color: "#cdb99a"
+		color: Theme.accent
 		font.bold: true
 		font.family: "monospace"
 		font.pixelSize: 13
@@ -15,7 +16,7 @@ Row {
 
 	Text {
 		text: parent.value
-		color: "#ffffff"
+		color: Theme.fg
 		font.bold: true
 		font.family: "monospace"
 		font.pixelSize: 13

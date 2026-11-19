@@ -1,0 +1,5 @@
+singleton Theme Theme.qml
+Capsule Capsule.qml
+InfoPanel InfoPanel.qml
+InfoRow InfoRow.qml
+StatusPill StatusPill.qml

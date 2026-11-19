@@ -1,4 +1,5 @@
 import QtQuick
+import "."
 
 Rectangle {
 	id: root
@@ -16,7 +17,7 @@ Rectangle {
 	width: collapsedWidth
 	height: collapsedHeight
 	radius: collapsedHeight / 2
-	color: "#000000"
+	color: Theme.bg
 	clip: true
 
 	states: State {

@@ -1,4 +1,5 @@
 import QtQuick
+import "."
 import Quickshell
 import Quickshell.Services.UPower
 
@@ -27,7 +28,7 @@ Item {
 	Text {
 		anchors.centerIn: parent
 		text: Qt.formatDateTime(clock.date, "HH:mm")
-		color: "#ffffff"
+		color: Theme.fg
 		font.bold: true
 		font.family: "monospace"
 		font.pixelSize: 18
@@ -41,6 +42,6 @@ Item {
 		height: 10
 		radius: 5
 		visible: root.charging || root.low
-		color: root.charging ? "#4cd964" : "#ff453a"
+		color: root.charging ? Theme.good : Theme.bad
 	}
 }

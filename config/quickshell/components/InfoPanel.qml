@@ -1,4 +1,6 @@
 import QtQuick
+import "."
+import QtQuick.Effects
 import Quickshell
 import Quickshell.Io
 import Quickshell.Services.UPower
@@ -159,7 +161,7 @@ Item {
         anchors.topMargin: 18
         anchors.horizontalCenter: parent.horizontalCenter
         text: Qt.formatDateTime(clock.date, "HH:mm")
-        color: "#ffffff"
+        color: Theme.fg
 	font.bold: true
 	font.family: "monospace"
         font.pixelSize: 18
@@ -167,7 +169,7 @@ Item {
 
     Row {
         anchors.top: parent.top
-        anchors.topMargin: 22
+        anchors.topMargin: 18
         anchors.right: parent.right
         anchors.rightMargin: 30
         spacing: 6
@@ -177,13 +179,13 @@ Item {
             height: 6
             radius: 3
             visible: root.charging || root.low
-            color: root.charging ? "#5fd068" : "#e05252"
+            color: root.charging ? Theme.good : Theme.bad
             anchors.verticalCenter: parent.verticalCenter
         }
 
         Text {
             text: root.batteryPercent + "%"
-            color: "#cdb99a"
+            color: Theme.fg
 	    font.bold: true
 	    font.family: "monospace"
             font.pixelSize: 18
@@ -191,16 +193,28 @@ Item {
     }
 
 
-    Text {
+    Item {
         anchors.left: parent.left
-        anchors.leftMargin: 28
+        anchors.leftMargin: 78
         anchors.verticalCenter: parent.verticalCenter
-        text: logoFile.text()
-        color: "#cdb99a"
-	font.bold: true
-        font.family: "monospace"
-        font.pixelSize: 10
-        textFormat: Text.PlainText
+        width: 120
+	anchors.verticalCenterOffset: 14
+        height: 168
+
+        Image {
+            id: emblem
+            anchors.fill: parent
+            source: Qt.resolvedUrl("../assets/logo.svg")
+            sourceSize: Qt.size(120, 168)
+            visible: false
+        }
+
+        MultiEffect {
+            anchors.fill: parent
+            source: emblem
+            colorization: 1.0
+            colorizationColor: Theme.accent
+        }
     }
 
 
@@ -208,11 +222,12 @@ Item {
         anchors.right: parent.right
         anchors.rightMargin: 30
         anchors.verticalCenter: parent.verticalCenter
+	anchors.verticalCenterOffset: 14
         spacing: 6
 
         Text {
             text: root.userHost
-            color: "#cdb99a"
+            color: Theme.accent
 	    font.bold: true
             font.family: "monospace"
             font.pixelSize: 13

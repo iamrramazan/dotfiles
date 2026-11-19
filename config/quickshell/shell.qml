@@ -3,12 +3,14 @@ import Quickshell
 import Quickshell.Wayland
 import "components"
 import Quickshell.Io
+import Quickshell.Services.UPower
 
 PanelWindow {
 	id: panel
 
 	property int gap: 8
 	property bool shotFlash: false
+	property color flashColor: Theme.fg
 
 	anchors {
 		top: true
@@ -53,7 +55,7 @@ PanelWindow {
 			width: 10
 			height: 10
 			radius: 5
-			color: "#ffffff"
+			color: panel.flashColor
 			anchors.left: parent.left
 			anchors.leftMargin: 16
 			anchors.top: parent.top
@@ -67,6 +69,7 @@ PanelWindow {
 		target: "island"
 
 		function screenshot(): void {
+			panel.flashColor = Theme.fg
 			panel.shotFlash = true
 			shotTimer.restart()
 		}
@@ -80,5 +83,20 @@ PanelWindow {
 		id: shotTimer
 		interval: 1500
 		onTriggered: panel.shotFlash = false
+	}
+
+	// следим за сменой профиля питания
+	Connections {
+		// источник сигналов: сервис профилей питания
+		target: PowerProfiles
+		// эта функция срабатывает, когда профиль сменился
+		function onProfileChanged() {
+			// power-saver зелёный, balanced жёлтый, performance красный
+			panel.flashColor = PowerProfiles.profile === PowerProfile.PowerSaver ? Theme.good : (PowerProfiles.profile === PowerProfile.Balanced ? Theme.mid : Theme.bad)
+			// включаем вспышку точки
+			panel.shotFlash = true
+			// запускаем таймер погасания (1,5 с)
+			shotTimer.restart()
+		}
 	}
 }

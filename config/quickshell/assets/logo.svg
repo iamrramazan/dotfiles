@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 1 15 21" shape-rendering="crispEdges">
+  <g fill="#f5efe0" stroke="#f5efe0">
+    <line x1="1" y1="2" x2="14" y2="2" stroke-width="2" stroke-dasharray="1 1"/>
+    <line x1="1" y1="21" x2="14" y2="21" stroke-width="2" stroke-dasharray="1 1"/>
+    <path stroke="none" fill-rule="evenodd" d="
+      M1 4h13v15h-13z
+      M2 5h11v13h-11z
+      M3 6h9v11h-9z
+      M7 8h1v1h-1z
+      M6 9h1v1h-1z M8 9h1v1h-1z
+      M5 10h1v1h-1z M9 10h1v1h-1z
+      M4 11h1v1h-1z M7 11h1v1h-1z M10 11h1v1h-1z
+      M5 12h1v1h-1z M9 12h1v1h-1z
+      M6 13h1v1h-1z M8 13h1v1h-1z
+      M7 14h1v1h-1z"/>
+  </g>
+</svg>
+
+
+
