@@ -24,7 +24,7 @@ PanelWindow {
 
 	exclusionMode: ExclusionMode.Normal
 
-	exclusiveZone: gap + capsule.collapsedHeight
+	exclusiveZone: gap + capsule.collapsedHeight - 12
 
 	WlrLayershell.layer: WlrLayer.Top
 
